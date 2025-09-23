@@ -89,37 +89,45 @@ model = genai.GenerativeModel(
     system_instruction=prompt_fijo
 )
 
-
 app = Flask(__name__)
 
-chat_session = model.start_chat(history=[])
+sesiones = {}
 
-def chat_con_memoria(mensaje_usuario):
-    # Guardar mensaje del usuario
-    guardar_en_excel("Usuario", mensaje_usuario)
+def get_chat_session(user_id):
+    if user_id not in sesiones:
+        sesiones[user_id] = model.start_chat(history=[])
+    return sesiones[user_id]
 
-    # Enviar mensaje a la sesión de chat
+def chat_con_memoria(user_id, mensaje_usuario):
+    guardar_en_excel(user_id, "Usuario", mensaje_usuario)
+
+    chat_session = get_chat_session(user_id)
+
     response = chat_session.send_message(mensaje_usuario)
     respuesta = response.text
-
-    # Guardar respuesta del asistente
-    guardar_en_excel("Asistente", respuesta)
+    
+    guardar_en_excel(user_id, "Asistente", respuesta)
 
     return respuesta
 
-def guardar_en_excel(sujeto, mensaje):
-    archivo = "conversacion.xlsx"
+def guardar_en_excel(user_id, sujeto, mensaje):
+    archivo = f"conversacion_{user_id}.xlsx"
     hora = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     nuevo = pd.DataFrame([[hora, sujeto, mensaje]], columns=["Hora", "Sujeto", "Mensaje"])
 
     if os.path.exists(archivo):
-        # Si ya existe, agregamos al final
         existente = pd.read_excel(archivo)
         actualizado = pd.concat([existente, nuevo], ignore_index=True)
         actualizado.to_excel(archivo, index=False)
     else:
-        # Si no existe, lo creamos
         nuevo.to_excel(archivo, index=False)
+
+def login():
+    if request.method == "POST":
+        nombre = request.form.get("nombre")
+        session["nombre"] = nombre   # Guardamos el nombre en la sesión
+        return redirect(url_for("chat"))
+    return render_template("login.html")
 
 @app.route("/")
 def index():
@@ -128,8 +136,10 @@ def index():
 @app.route("/chat", methods=["POST"])
 def chat():
     data = request.json
+    user_id = data.get("user_id", "default")
     mensaje = data.get("mensaje", "")
-    respuesta = chat_con_memoria(mensaje)
+
+    respuesta = chat_con_memoria(user_id, mensaje)
     return jsonify({"respuesta": respuesta})
 
 if __name__ == "__main__":

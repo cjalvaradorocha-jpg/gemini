@@ -14,7 +14,7 @@
       height: 100vh;
       margin: 0;
     }
-    #chat-container {
+    #login-container, #chat-container {
       width: 400px;
       height: 600px;
       background: #fff;
@@ -22,7 +22,9 @@
       box-shadow: 0 4px 12px rgba(0,0,0,0.2);
       display: flex;
       flex-direction: column;
+      padding: 20px;
     }
+    #chat-container { display: none; }
     #messages {
       flex: 1;
       overflow-y: auto;
@@ -32,7 +34,7 @@
     }
     .msg {
       margin: 10px 0;
-       padding: 3px 10px;
+      padding: 3px 10px;
       border-radius: 8px;
       font-size: 14px;
       max-width: 80%;
@@ -70,9 +72,21 @@
     #send-btn:hover {
       background: #FF660079;
     }
+    input, button {
+      margin: 5px 0;
+    }
   </style>
 </head>
 <body>
+  <!-- Login -->
+  <div id="login-container">
+    <h2>Bienvenido</h2>
+    <p>Escribe tu nombre para iniciar sesión</p>
+    <input type="text" id="username" placeholder="Tu nombre">
+    <button onclick="login()">Entrar</button>
+  </div>
+
+  <!-- Chat -->
   <div id="chat-container">
     <div id="messages"></div>
     <div id="input-container">
@@ -82,17 +96,32 @@
   </div>
 
   <script>
+    let userId = null;
+    const loginDiv = document.getElementById("login-container");
+    const chatDiv = document.getElementById("chat-container");
     const messagesDiv = document.getElementById("messages");
     const input = document.getElementById("user-input");
     const sendBtn = document.getElementById("send-btn");
 
+    function login() {
+      const username = document.getElementById("username").value.trim();
+      if (!username) {
+        alert("Por favor escribe tu nombre");
+        return;
+      }
+      userId = username;
+      localStorage.setItem("userId", userId);
+
+      loginDiv.style.display = "none";
+      chatDiv.style.display = "flex";
+    }
+
     function addMessage(text, sender) {
-    const msgDiv = document.createElement("div");
-    // convertir Markdown a HTML
-    msgDiv.innerHTML = marked.parse(text);
-    msgDiv.classList.add("msg", sender);
-    messagesDiv.appendChild(msgDiv);
-    messagesDiv.scrollTop = messagesDiv.scrollHeight;
+      const msgDiv = document.createElement("div");
+      msgDiv.innerHTML = marked.parse(text);
+      msgDiv.classList.add("msg", sender);
+      messagesDiv.appendChild(msgDiv);
+      messagesDiv.scrollTop = messagesDiv.scrollHeight;
     }
 
     async function sendMessage() {
@@ -105,7 +134,7 @@
         const response = await fetch("/chat", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ mensaje: text })
+          body: JSON.stringify({ user_id: userId, mensaje: text })
         });
         const data = await response.json();
         addMessage(data.respuesta, "assistant");
