@@ -4,7 +4,7 @@ from flask import Flask, request, jsonify, render_template
 import pandas as pd
 from datetime import datetime
 
-genai.configure(GOOGLE_API_KEY="AIzaSyBML2vnnrmeHk-xGh4xx1XUiGE2JQ-66pk")
+genai.configure(api_key="GOOGLE_API_KEY")
 
 prompt_fijo = """Eres Seraphina, el asistente virtual de bienestar integral. Tu propósito es ayudar a las familias a prevenir enfermedades crónicas no transmisibles (ECNT), a través del desarrollo de hábitos saludables y la educación en estas enfermedades.
  
