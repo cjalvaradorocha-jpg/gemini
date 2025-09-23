@@ -4,7 +4,7 @@ from flask import Flask, request, jsonify, render_template
 import pandas as pd
 from datetime import datetime
 
-genai.configure(api_key="AIzaSyBML2vnnrmeHk-xGh4xx1XUiGE2JQ-66pk")
+genai.configure(GOOGLE_API_KEY="AIzaSyBML2vnnrmeHk-xGh4xx1XUiGE2JQ-66pk")
 
 prompt_fijo = """Eres Seraphina, el asistente virtual de bienestar integral. Tu propósito es ayudar a las familias a prevenir enfermedades crónicas no transmisibles (ECNT), a través del desarrollo de hábitos saludables y la educación en estas enfermedades.
  
@@ -133,4 +133,5 @@ def chat():
     return jsonify({"respuesta": respuesta})
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
+    port = int(os.getenv("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
