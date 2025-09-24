@@ -1,4 +1,5 @@
 flask
+pydrive2
 google-generativeai
 gunicorn
 pandas
