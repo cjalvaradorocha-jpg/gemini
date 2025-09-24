@@ -3,8 +3,15 @@ import google.generativeai as genai
 from flask import Flask, request, jsonify, render_template
 import pandas as pd
 from datetime import datetime
+import json
+from google.oauth2 import service_account
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaFileUpload
+from google.oauth2.credentials import Credentials
 
 genai.configure(api_key="AIzaSyCr7nX-b-yzi1apPE1-GQFdBgbpUQf3aAk")
+FOLDER_ID = "1y8FBTOq3ocW4JsTmB3fgiJRQI50Zckkv"
+SCOPES = ['https://www.googleapis.com/auth/drive.file']
 
 prompt_fijo = """Eres Seraphina, el asistente virtual de bienestar integral. Tu propósito es ayudar a las familias a prevenir enfermedades crónicas no transmisibles (ECNT), a través del desarrollo de hábitos saludables y la educación en estas enfermedades.
  
@@ -110,6 +117,36 @@ def chat_con_memoria(user_id, mensaje_usuario):
 
     return respuesta
 
+def get_drive_service():
+    """Carga las credenciales de OAuth desde token.json"""
+    creds = None
+    if os.path.exists("token.json"):
+        creds = Credentials.from_authorized_user_file("token.json", SCOPES)
+    else:
+        raise Exception("⚠️ No se encontró token.json. Ejecuta authorize.py primero.")
+    return build("drive", "v3", credentials=creds)
+
+def upload_to_drive(filename, *args, **kwargs):
+    """Sube archivo Excel a la carpeta Gemini Excel en Google Drive"""
+    try:
+        service = get_drive_service()
+        file_metadata = {
+            "name": os.path.basename(filename),
+            "parents": [FOLDER_ID]
+        }
+        media = MediaFileUpload(filename, mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        file = service.files().create(
+            body=file_metadata,
+            media_body=media,
+            fields="id"
+        ).execute()
+
+        file_id = file.get("id")
+        print(f"✅ Archivo {filename} subido a Google Drive con ID: {file.get('id')}")
+    except Exception as e:
+        print(f"⚠️ Error subiendo {filename} a Google Drive: {e}")
+
+
 def guardar_en_excel(user_id, sujeto, mensaje):
     archivo = f"conversacion_{user_id}.xlsx"
     hora = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -121,6 +158,13 @@ def guardar_en_excel(user_id, sujeto, mensaje):
         actualizado.to_excel(archivo, index=False)
     else:
         nuevo.to_excel(archivo, index=False)
+
+    try:
+        file_id = upload_to_drive(archivo, os.path.basename(archivo))
+        print(f"✅ Archivo {archivo} subido a Google Drive con ID: {file_id}")
+    except Exception as e:
+        print(f"⚠️ Error subiendo {archivo} a Google Drive: {e}")
+
 
 def login():
     if request.method == "POST":
