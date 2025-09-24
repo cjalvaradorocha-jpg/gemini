@@ -1,17 +1,26 @@
 import os
+import json
 import google.generativeai as genai
 from flask import Flask, request, jsonify, render_template
 import pandas as pd
 from datetime import datetime
-import json
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
-from google.oauth2.credentials import Credentials
 
-genai.configure(api_key="AIzaSyCr7nX-b-yzi1apPE1-GQFdBgbpUQf3aAk")
-FOLDER_ID = "1y8FBTOq3ocW4JsTmB3fgiJRQI50Zckkv"
-SCOPES = ['https://www.googleapis.com/auth/drive.file']
+# --- CONFIG ---
+# Mueve tus keys a variables de entorno en Render: GOOGLE_API_KEY, GOOGLE_SERVICE_ACCOUNT_JSON, DRIVE_FOLDER_ID
+GENAI_API_KEY = os.getenv("GOOGLE_API_KEY", None)
+SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", None)
+FOLDER_ID = os.getenv("DRIVE_FOLDER_ID")
+SCOPES = ["https://www.googleapis.com/auth/drive"]
+
+# Configurar genai (si lo usas)
+if GENAI_API_KEY:
+    genai.configure(api_key=GENAI_API_KEY)
+else:
+    # Si no pones key en env, deja como antes (no recomendado)
+    print("⚠️ WARN: GOOGLE_API_KEY no está en variables de entorno. Añádela en Render.")
 
 prompt_fijo = """Eres Seraphina, el asistente virtual de bienestar integral. Tu propósito es ayudar a las familias a prevenir enfermedades crónicas no transmisibles (ECNT), a través del desarrollo de hábitos saludables y la educación en estas enfermedades.
  
@@ -91,13 +100,12 @@ INSTRUCCIONES PARA TU COMPORTAMIENTO:
     - recordatorio de chequeos médicos
     - toma de indicadores en salud (peso, talla, IMC, tensión, glucosa, etc.)"""
 
-model = genai.GenerativeModel(
-    "gemini-1.5-flash",
-    system_instruction=prompt_fijo
-)
+# Inicializa modelo (igual que antes)
+model = genai.GenerativeModel("gemini-1.5-flash", system_instruction=prompt_fijo)
 
 app = Flask(__name__)
 
+# sesiones en memoria: { user_id: chat_session_object }
 sesiones = {}
 
 def get_chat_session(user_id):
@@ -105,48 +113,97 @@ def get_chat_session(user_id):
         sesiones[user_id] = model.start_chat(history=[])
     return sesiones[user_id]
 
-def chat_con_memoria(user_id, mensaje_usuario):
-    guardar_en_excel(user_id, "Usuario", mensaje_usuario)
-
-    chat_session = get_chat_session(user_id)
-
-    response = chat_session.send_message(mensaje_usuario)
-    respuesta = response.text
-    
-    guardar_en_excel(user_id, "Asistente", respuesta)
-
-    return respuesta
-
+# ---------------------------
+# Google Drive helpers
+# ---------------------------
 def get_drive_service():
-    """Carga las credenciales de OAuth desde token.json"""
-    creds = None
-    if os.path.exists("token.json"):
-        creds = Credentials.from_authorized_user_file("token.json", SCOPES)
-    else:
-        raise Exception("⚠️ No se encontró token.json. Ejecuta authorize.py primero.")
-    return build("drive", "v3", credentials=creds)
+    """Crea un servicio de Drive usando service account JSON desde la variable de entorno."""
+    if not SERVICE_ACCOUNT_JSON:
+        raise RuntimeError("GOOGLE_SERVICE_ACCOUNT_JSON no está configurada en las variables de entorno.")
 
-def upload_to_drive(filename, *args, **kwargs):
-    """Sube archivo Excel a la carpeta Gemini Excel en Google Drive"""
+    creds_info = json.loads(SERVICE_ACCOUNT_JSON)
+    creds = service_account.Credentials.from_service_account_info(creds_info, scopes=SCOPES)
+    service = build("drive", "v3", credentials=creds)
+    return service
+
+INDEX_FILE = "drive_index.json"
+
+def load_index():
+    if os.path.exists(INDEX_FILE):
+        try:
+            with open(INDEX_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return {}
+    return {}
+
+def save_index(index):
+    with open(INDEX_FILE, "w", encoding="utf-8") as f:
+        json.dump(index, f)
+
+def find_file_in_drive(service, filename):
+    """Busca un archivo con ese nombre dentro de la carpeta FOLDER_ID. Devuelve fileId o None."""
+    q = f"name = '{filename}' and '{FOLDER_ID}' in parents and trashed = false"
     try:
-        service = get_drive_service()
-        file_metadata = {
-            "name": os.path.basename(filename),
-            "parents": [FOLDER_ID]
-        }
-        media = MediaFileUpload(filename, mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-        file = service.files().create(
-            body=file_metadata,
-            media_body=media,
-            fields="id"
-        ).execute()
-
-        file_id = file.get("id")
-        print(f"✅ Archivo {filename} subido a Google Drive con ID: {file.get('id')}")
+        res = service.files().list(q=q, spaces='drive', fields="files(id, name)", supportsAllDrives=True).execute()
+        files = res.get("files", [])
+        if files:
+            return files[0].get("id")
+        return None
     except Exception as e:
-        print(f"⚠️ Error subiendo {filename} a Google Drive: {e}")
+        print("Error buscando archivo en Drive:", e)
+        return None
 
+def upload_or_update_file(filename):
+    """Sube o actualiza filename en la carpeta FOLDER_ID. Devuelve fileId."""
+    service = get_drive_service()
+    basename = os.path.basename(filename)
+    index = load_index()
 
+    # Si tenemos fileId en index, intentamos actualizar
+    file_id = index.get(basename)
+    if file_id:
+        try:
+            media = MediaFileUpload(filename, mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", resumable=True)
+            updated = service.files().update(fileId=file_id, media_body=media, supportsAllDrives=True).execute()
+            print(f"♻️ Actualizado {basename} -> {updated.get('id')}")
+            return updated.get("id")
+        except Exception as e:
+            print("⚠️ No se pudo actualizar usando fileId guardado:", e)
+            # si falla, borramos la entrada y seguimos para crear de nuevo
+            index.pop(basename, None)
+            save_index(index)
+
+    # Si no está en index, buscar por nombre en Drive
+    found = find_file_in_drive(service, basename)
+    media = MediaFileUpload(filename, mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", resumable=True)
+
+    if found:
+        try:
+            updated = service.files().update(fileId=found, media_body=media, supportsAllDrives=True).execute()
+            index[basename] = updated.get("id")
+            save_index(index)
+            print(f"♻️ Actualizado (found) {basename} -> {updated.get('id')}")
+            return updated.get("id")
+        except Exception as e:
+            print("⚠️ Error actualizando archivo encontrado:", e)
+            raise
+
+    # Si no encontrado: crear nuevo
+    try:
+        file_metadata = {"name": basename, "parents": [FOLDER_ID]}
+        created = service.files().create(body=file_metadata, media_body=media, fields="id", supportsAllDrives=True).execute()
+        index[basename] = created.get("id")
+        save_index(index)
+        print(f"✅ Creado {basename} en Drive -> {created.get('id')}")
+        return created.get("id")
+    except Exception as e:
+        print("⚠️ Error creando archivo en Drive:", e)
+        raise
+
+# ---------------------------
+# Chat + Guardado
+# ---------------------------
 def guardar_en_excel(user_id, sujeto, mensaje):
     archivo = f"conversacion_{user_id}.xlsx"
     hora = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -159,20 +216,23 @@ def guardar_en_excel(user_id, sujeto, mensaje):
     else:
         nuevo.to_excel(archivo, index=False)
 
-    try:
-        file_id = upload_to_drive(archivo, os.path.basename(archivo))
-        print(f"✅ Archivo {archivo} subido a Google Drive con ID: {file_id}")
-    except Exception as e:
-        print(f"⚠️ Error subiendo {archivo} a Google Drive: {e}")
+    # NOTA: NO subimos automáticamente. Usa la ruta /upload para subir/actualizar.
+    return archivo
 
+def chat_con_memoria(user_id, mensaje_usuario):
+    guardar_en_excel(user_id, "Usuario", mensaje_usuario)
 
-def login():
-    if request.method == "POST":
-        nombre = request.form.get("nombre")
-        session["nombre"] = nombre   # Guardamos el nombre en la sesión
-        return redirect(url_for("chat"))
-    return render_template("login.html")
+    chat_session = get_chat_session(user_id)
+    response = chat_session.send_message(mensaje_usuario)
+    respuesta = response.text
 
+    guardar_en_excel(user_id, "Asistente", respuesta)
+
+    return respuesta
+
+# ---------------------------
+# Rutas de Flask
+# ---------------------------
 @app.route("/")
 def index():
     return render_template("index.html")
@@ -182,10 +242,40 @@ def chat():
     data = request.json
     user_id = data.get("user_id", "default")
     mensaje = data.get("mensaje", "")
-
     respuesta = chat_con_memoria(user_id, mensaje)
     return jsonify({"respuesta": respuesta})
 
+@app.route("/upload", methods=["POST"])
+def upload():
+    """Sube (o actualiza) el Excel del user_id a Drive. Espera JSON: { user_id: 'juan' }"""
+    data = request.json or {}
+    user_id = data.get("user_id")
+    if not user_id:
+        return jsonify({"error": "user_id required"}), 400
+
+    archivo = f"conversacion_{user_id}.xlsx"
+    if not os.path.exists(archivo):
+        return jsonify({"error": f"{archivo} not found on server"}), 404
+
+    try:
+        file_id = upload_or_update_file(archivo)
+        return jsonify({"status": "ok", "file_id": file_id})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+# endpoint opcional para bajar el excel
+@app.route("/download/<user_id>", methods=["GET"])
+def download_local(user_id):
+    archivo = f"conversacion_{user_id}.xlsx"
+    if not os.path.exists(archivo):
+        return jsonify({"error": "not found"}), 404
+    # Servimos como archivo descargable
+    from flask import send_file
+    return send_file(archivo, as_attachment=True)
+
+# ---------------------------
+# Run
+# ---------------------------
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
