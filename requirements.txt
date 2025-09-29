@@ -1,6 +1,7 @@
 flask
-pydrive2
-google-generativeai
-gunicorn
 pandas
-openpyxl
+gunicorn
+google-api-python-client
+google-auth
+google-auth-httplib2
+google-generativeai>=0.8.3
