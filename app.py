@@ -110,6 +110,7 @@ app = Flask(__name__)
 # sesiones en memoria: { user_id: chat_session_object }
 sesiones = {}
 
+# ------------------ CHAT SESSION ------------------
 def get_chat_session(user_id):
     if user_id not in sesiones:
         sesiones[user_id] = model.start_chat(history=[])
@@ -157,8 +158,7 @@ def save_index(index):
 def find_file_in_drive(service, filename):
     q = f"name = '{filename}' and '{FOLDER_ID}' in parents and trashed = false"
     try:
-        res = service.files().list(q=q, spaces='drive',
-                                   fields="files(id, name)", supportsAllDrives=True).execute()
+        res = service.files().list(q=q, spaces='drive', fields="files(id, name)", supportsAllDrives=True).execute()
         files = res.get("files", [])
         if files:
             return files[0].get("id")
@@ -171,15 +171,14 @@ def upload_or_update_file(filename):
     service = get_drive_service()
     basename = os.path.basename(filename)
     index = load_index()
-
     file_id = index.get(basename)
+    media = MediaFileUpload(
+        filename,
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        resumable=True
+    )
     if file_id:
         try:
-            media = MediaFileUpload(
-                filename,
-                mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                resumable=True
-            )
             updated = service.files().update(
                 fileId=file_id, media_body=media, supportsAllDrives=True
             ).execute()
@@ -191,38 +190,26 @@ def upload_or_update_file(filename):
             save_index(index)
 
     found = find_file_in_drive(service, basename)
-    media = MediaFileUpload(
-        filename,
-        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        resumable=True
-    )
-
     if found:
         try:
-            updated = service.files().update(
-                fileId=found, media_body=media, supportsAllDrives=True
-            ).execute()
+            updated = service.files().update(fileId=found, media_body=media, supportsAllDrives=True ).execute()
             index[basename] = updated.get("id")
             save_index(index)
             print(f"♻️ Actualizado (found) {basename} -> {updated.get('id')}")
             return updated.get("id")
         except Exception as e:
             print("⚠️ Error actualizando archivo encontrado:", e)
-            raise
-
     try:
         file_metadata = {"name": basename, "parents": [FOLDER_ID]}
-        created = service.files().create(
-            body=file_metadata, media_body=media,
-            fields="id", supportsAllDrives=True
-        ).execute()
+        created = service.files().create( body=file_metadata, media_body=media, fields="id", supportsAllDrives=True ).execute()
         index[basename] = created.get("id")
         save_index(index)
-        print(f"✅ Creado {basename} en Drive -> {created.get('id')}")
+        print(f"✅ Creado {basename} -> {created.get('id')}")
         return created.get("id")
     except Exception as e:
         print("⚠️ Error creando archivo en Drive:", e)
-        raise
+        return None
+
 
 # ---------------------------
 # Chat + Guardado
@@ -250,8 +237,7 @@ def chat_con_memoria(user_id, mensaje_usuario):
 
     # 🚀 Subida automática a Drive
     try:
-        file_id = upload_or_update_file(archivo)
-        print(f"📤 Conversación de {user_id} subida/actualizada en Drive ({file_id})")
+        upload_or_update_file(archivo)
     except Exception as e:
         print("⚠️ Error subiendo a Drive:", e)
 
@@ -278,8 +264,6 @@ def download_local(user_id):
     archivo = f"conversacion_{user_id}.xlsx"
     if not os.path.exists(archivo):
         return jsonify({"error": "not found"}), 404
-    # Servimos como archivo descargable
-    from flask import send_file
     return send_file(archivo, as_attachment=True)
 
 # ---------------------------
