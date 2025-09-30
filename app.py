@@ -9,13 +9,12 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 
 # --- CONFIG ---
-# Mueve tus keys a variables de entorno en Render: GOOGLE_API_KEY, GOOGLE_SERVICE_ACCOUNT_JSON, DRIVE_FOLDER_ID
 GENAI_API_KEY = os.getenv("GOOGLE_API_KEY", None)
 SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", None)
 FOLDER_ID = os.getenv("DRIVE_FOLDER_ID")
 SCOPES = ["https://www.googleapis.com/auth/drive"]
 
-# Configurar genai (si lo usas)
+# Configurar genai
 if GENAI_API_KEY:
     genai.configure(api_key=GENAI_API_KEY)
 else:
@@ -100,7 +99,7 @@ INSTRUCCIONES PARA TU COMPORTAMIENTO:
     - recordatorio de chequeos médicos
     - toma de indicadores en salud (peso, talla, IMC, tensión, glucosa, etc.)"""
 
-# Inicializa modelo (igual que antes)
+# Inicializa modelo
 model = genai.GenerativeModel("gemini-2.5-pro", system_instruction=prompt_fijo)
 
 app = Flask(__name__)
@@ -117,7 +116,6 @@ def get_chat_session(user_id):
 # Google Drive helpers
 # ---------------------------
 def get_drive_service():
-    """Crea un servicio de Drive usando service account JSON desde la variable de entorno."""
     if not SERVICE_ACCOUNT_JSON:
         raise RuntimeError("GOOGLE_SERVICE_ACCOUNT_JSON no está configurada en las variables de entorno.")
 
@@ -142,10 +140,10 @@ def save_index(index):
         json.dump(index, f)
 
 def find_file_in_drive(service, filename):
-    """Busca un archivo con ese nombre dentro de la carpeta FOLDER_ID. Devuelve fileId o None."""
     q = f"name = '{filename}' and '{FOLDER_ID}' in parents and trashed = false"
     try:
-        res = service.files().list(q=q, spaces='drive', fields="files(id, name)", supportsAllDrives=True).execute()
+        res = service.files().list(q=q, spaces='drive',
+                                   fields="files(id, name)", supportsAllDrives=True).execute()
         files = res.get("files", [])
         if files:
             return files[0].get("id")
@@ -155,32 +153,40 @@ def find_file_in_drive(service, filename):
         return None
 
 def upload_or_update_file(filename):
-    """Sube o actualiza filename en la carpeta FOLDER_ID. Devuelve fileId."""
     service = get_drive_service()
     basename = os.path.basename(filename)
     index = load_index()
 
-    # Si tenemos fileId en index, intentamos actualizar
     file_id = index.get(basename)
     if file_id:
         try:
-            media = MediaFileUpload(filename, mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", resumable=True)
-            updated = service.files().update(fileId=file_id, media_body=media, supportsAllDrives=True).execute()
+            media = MediaFileUpload(
+                filename,
+                mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                resumable=True
+            )
+            updated = service.files().update(
+                fileId=file_id, media_body=media, supportsAllDrives=True
+            ).execute()
             print(f"♻️ Actualizado {basename} -> {updated.get('id')}")
             return updated.get("id")
         except Exception as e:
             print("⚠️ No se pudo actualizar usando fileId guardado:", e)
-            # si falla, borramos la entrada y seguimos para crear de nuevo
             index.pop(basename, None)
             save_index(index)
 
-    # Si no está en index, buscar por nombre en Drive
     found = find_file_in_drive(service, basename)
-    media = MediaFileUpload(filename, mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", resumable=True)
+    media = MediaFileUpload(
+        filename,
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        resumable=True
+    )
 
     if found:
         try:
-            updated = service.files().update(fileId=found, media_body=media, supportsAllDrives=True).execute()
+            updated = service.files().update(
+                fileId=found, media_body=media, supportsAllDrives=True
+            ).execute()
             index[basename] = updated.get("id")
             save_index(index)
             print(f"♻️ Actualizado (found) {basename} -> {updated.get('id')}")
@@ -189,10 +195,12 @@ def upload_or_update_file(filename):
             print("⚠️ Error actualizando archivo encontrado:", e)
             raise
 
-    # Si no encontrado: crear nuevo
     try:
         file_metadata = {"name": basename, "parents": [FOLDER_ID]}
-        created = service.files().create(body=file_metadata, media_body=media, fields="id", supportsAllDrives=True).execute()
+        created = service.files().create(
+            body=file_metadata, media_body=media,
+            fields="id", supportsAllDrives=True
+        ).execute()
         index[basename] = created.get("id")
         save_index(index)
         print(f"✅ Creado {basename} en Drive -> {created.get('id')}")
@@ -216,17 +224,21 @@ def guardar_en_excel(user_id, sujeto, mensaje):
     else:
         nuevo.to_excel(archivo, index=False)
 
-    # NOTA: NO subimos automáticamente. Usa la ruta /upload para subir/actualizar.
     return archivo
 
 def chat_con_memoria(user_id, mensaje_usuario):
-    guardar_en_excel(user_id, "Usuario", mensaje_usuario)
-
+    archivo = guardar_en_excel(user_id, "Usuario", mensaje_usuario)
     chat_session = get_chat_session(user_id)
     response = chat_session.send_message(mensaje_usuario)
     respuesta = response.text
+    archivo = guardar_en_excel(user_id, "Asistente", respuesta)
 
-    guardar_en_excel(user_id, "Asistente", respuesta)
+    # 🚀 Subida automática a Drive
+    try:
+        file_id = upload_or_update_file(archivo)
+        print(f"📤 Conversación de {user_id} subida/actualizada en Drive ({file_id})")
+    except Exception as e:
+        print("⚠️ Error subiendo a Drive:", e)
 
     return respuesta
 
@@ -244,24 +256,6 @@ def chat():
     mensaje = data.get("mensaje", "")
     respuesta = chat_con_memoria(user_id, mensaje)
     return jsonify({"respuesta": respuesta})
-
-@app.route("/upload", methods=["POST"])
-def upload():
-    """Sube (o actualiza) el Excel del user_id a Drive. Espera JSON: { user_id: 'juan' }"""
-    data = request.json or {}
-    user_id = data.get("user_id")
-    if not user_id:
-        return jsonify({"error": "user_id required"}), 400
-
-    archivo = f"conversacion_{user_id}.xlsx"
-    if not os.path.exists(archivo):
-        return jsonify({"error": f"{archivo} not found on server"}), 404
-
-    try:
-        file_id = upload_or_update_file(archivo)
-        return jsonify({"status": "ok", "file_id": file_id})
-    except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
 
 # endpoint opcional para bajar el excel
 @app.route("/download/<user_id>", methods=["GET"])
