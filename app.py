@@ -121,19 +121,20 @@ def get_chat_session(user_id):
 # ---------------------------
 def get_drive_service():
     creds = None
-    # Reusar token si existe
     if os.path.exists(TOKEN_FILE):
         creds = Credentials.from_authorized_user_file(TOKEN_FILE, SCOPES)
-    # Si no hay token, se genera localmente (solo 1 vez)
+
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(Request())
         else:
+            # ⚡ Solo la primera vez en tu PC
             flow = InstalledAppFlow.from_client_secrets_file(
                 CLIENT_SECRETS_FILE, SCOPES
             )
-            creds = flow.run_local_server(port=0)
-        # Guardamos el token para Render
+            creds = flow.run_console()
+
+        # Guardar credenciales para el futuro
         with open(TOKEN_FILE, "w") as token:
             token.write(creds.to_json())
 
