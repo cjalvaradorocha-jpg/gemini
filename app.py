@@ -1,14 +1,17 @@
 import os
 import json
+import io
+import logging
 import google.generativeai as genai
-from flask import Flask, request, jsonify, render_template, send_file
+from flask import Flask, request, jsonify
 import pandas as pd
 from datetime import datetime
 from googleapiclient.discovery import build
-from googleapiclient.http import MediaFileUpload
+from googleapiclient.http import MediaIoBaseUpload
 from google.oauth2 import service_account
 
 # --- CONFIG ---
+logging.basicConfig(level=logging.INFO)
 GENAI_API_KEY = os.getenv("GOOGLE_API_KEY", None)
 FOLDER_ID = os.getenv("DRIVE_FOLDER_ID")
 SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
@@ -101,11 +104,9 @@ INSTRUCCIONES PARA TU COMPORTAMIENTO:
 model = genai.GenerativeModel("gemini-2.5-pro", system_instruction=prompt_fijo)
 
 app = Flask(__name__)
+sesiones = {}  # sesiones en memoria { user_id: chat_session }
 
-# sesiones en memoria: { user_id: chat_session_object }
-sesiones = {}
-
-# ------------------ CHAT SESSION ------------------
+# --------------------------- CHAT SESSION ---------------------------
 def get_chat_session(user_id):
     if user_id not in sesiones:
         sesiones[user_id] = model.start_chat(history=[])
@@ -136,95 +137,59 @@ def save_index(index):
     with open(INDEX_FILE, "w", encoding="utf-8") as f:
         json.dump(index, f)
 
-def find_file_in_drive(service, filename):
-    q = f"name = '{filename}' and '{FOLDER_ID}' in parents and trashed = false"
-    try:
-        res = service.files().list(q=q, spaces='drive', fields="files(id, name)").execute()
-        files = res.get("files", [])
-        if files:
-            return files[0].get("id")
-        return None
-    except Exception as e:
-        print("Error buscando archivo en Drive:", e)
-        return None
-
-def upload_or_update_file(filename):
-    service = get_drive_service()
-    basename = os.path.basename(filename)
-    index = load_index()
-    file_id = index.get(basename)
-    media = MediaFileUpload(
-        filename,
-        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        resumable=True
-    )
-    if file_id:
-        try:
-            updated = service.files().update(
-                fileId=file_id, media_body=media
-            ).execute()
-            print(f"♻️ Actualizado {basename} -> {updated.get('id')}")
-            return updated.get("id")
-        except Exception as e:
-            print("⚠️ No se pudo actualizar usando fileId guardado:", e)
-            index.pop(basename, None)
-            save_index(index)
-
-    found = find_file_in_drive(service, basename)
-    if found:
-        try:
-            updated = service.files().update(fileId=found, media_body=media).execute()
-            index[basename] = updated.get("id")
-            save_index(index)
-            print(f"♻️ Actualizado (found) {basename} -> {updated.get('id')}")
-            return updated.get("id")
-        except Exception as e:
-            print("⚠️ Error actualizando archivo encontrado:", e)
-    try:
-        file_metadata = {"name": basename, "parents": [FOLDER_ID]}
-        created = service.files().create(body=file_metadata, media_body=media, fields="id").execute()
-        index[basename] = created.get("id")
-        save_index(index)
-        print(f"✅ Creado {basename} -> {created.get('id')}")
-        return created.get("id")
-    except Exception as e:
-        print("⚠️ Error creando archivo en Drive:", e)
-        return None
-
-# --------------------------- Chat + Guardado ---------------------------
-def guardar_en_excel(user_id, sujeto, mensaje):
-    archivo = f"conversacion_{user_id}.xlsx"
+def upload_excel_memoria(user_id, sujeto, mensaje):
+    """Crea o actualiza Excel en memoria y lo sube a Drive"""
+    archivo_nombre = f"conversacion_{user_id}.xlsx"
     hora = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     nuevo = pd.DataFrame([[hora, sujeto, mensaje]], columns=["Hora", "Sujeto", "Mensaje"])
-
-    if os.path.exists(archivo):
-        existente = pd.read_excel(archivo)
-        actualizado = pd.concat([existente, nuevo], ignore_index=True)
-        actualizado.to_excel(archivo, index=False)
+    
+    # Leer Excel previo en memoria si existe localmente (opcional)
+    if os.path.exists(archivo_nombre):
+        existente = pd.read_excel(archivo_nombre)
+        df = pd.concat([existente, nuevo], ignore_index=True)
     else:
-        nuevo.to_excel(archivo, index=False)
+        df = nuevo
+    
+    buffer = io.BytesIO()
+    df.to_excel(buffer, index=False)
+    buffer.seek(0)
 
-    return archivo
+    try:
+        service = get_drive_service()
+        index = load_index()
+        file_id = index.get(archivo_nombre)
+        media = MediaIoBaseUpload(buffer, mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", resumable=True)
 
+        if file_id:
+            updated = service.files().update(fileId=file_id, media_body=media).execute()
+            logging.info(f"♻️ Actualizado {archivo_nombre} -> {updated.get('id')}")
+        else:
+            created = service.files().create(
+                body={"name": archivo_nombre, "parents": [FOLDER_ID]},
+                media_body=media,
+                fields="id"
+            ).execute()
+            index[archivo_nombre] = created.get("id")
+            save_index(index)
+            logging.info(f"✅ Creado {archivo_nombre} -> {created.get('id')}")
+    except Exception as e:
+        logging.error("⚠️ Error subiendo a Drive:", exc_info=e)
+
+    return archivo_nombre
+
+# --------------------------- Chat + Guardado ---------------------------
 def chat_con_memoria(user_id, mensaje_usuario):
-    archivo = guardar_en_excel(user_id, "Usuario", mensaje_usuario)
+    upload_excel_memoria(user_id, "Usuario", mensaje_usuario)
     chat_session = get_chat_session(user_id)
     response = chat_session.send_message(mensaje_usuario)
     respuesta = response.text
-    archivo = guardar_en_excel(user_id, "Asistente", respuesta)
-
-    # 🚀 Subida automática a Drive
-    try:
-        upload_or_update_file(archivo)
-    except Exception as e:
-        print("⚠️ Error subiendo a Drive:", e)
-
+    upload_excel_memoria(user_id, "Asistente", respuesta)
     return respuesta
 
 # --------------------------- Rutas de Flask ---------------------------
-@app.route("/")
+@app.route("/", methods=["GET"])
 def index():
-    return render_template("index.html")
+    return "Servidor funcionando"  # puedes poner tu template si quieres
 
 @app.route("/chat", methods=["POST"])
 def chat():
@@ -233,13 +198,6 @@ def chat():
     mensaje = data.get("mensaje", "")
     respuesta = chat_con_memoria(user_id, mensaje)
     return jsonify({"respuesta": respuesta})
-
-@app.route("/download/<user_id>", methods=["GET"])
-def download_local(user_id):
-    archivo = f"conversacion_{user_id}.xlsx"
-    if not os.path.exists(archivo):
-        return jsonify({"error": "not found"}), 404
-    return send_file(archivo, as_attachment=True)
 
 # --------------------------- Run ---------------------------
 if __name__ == "__main__":
