@@ -1,27 +1,22 @@
 import os
 import json
 import google.generativeai as genai
-from flask import Flask, request, jsonify, render_template
+from flask import Flask, request, jsonify, render_template, send_file
 import pandas as pd
 from datetime import datetime
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
-from google.auth.transport.requests import Request
-from google_auth_oauthlib.flow import InstalledAppFlow
-from google.oauth2.credentials import Credentials
+from google.oauth2 import service_account
 
 # --- CONFIG ---
 GENAI_API_KEY = os.getenv("GOOGLE_API_KEY", None)
 FOLDER_ID = os.getenv("DRIVE_FOLDER_ID")
-CLIENT_SECRETS_FILE = "credentials.json"
-TOKEN_FILE = "token.json"
-SCOPES = ["https://www.googleapis.com/auth/drive"]
+SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
 
 # Configurar genai
 if GENAI_API_KEY:
     genai.configure(api_key=GENAI_API_KEY)
 else:
-    # Si no pones key en env, deja como antes (no recomendado)
     print("⚠️ WARN: GOOGLE_API_KEY no está en variables de entorno. Añádela en Render.")
 
 prompt_fijo = """Eres Seraphina, el asistente virtual de bienestar integral. Tu propósito es ayudar a las familias a prevenir enfermedades crónicas no transmisibles (ECNT), a través del desarrollo de hábitos saludables y la educación en estas enfermedades.
@@ -116,28 +111,13 @@ def get_chat_session(user_id):
         sesiones[user_id] = model.start_chat(history=[])
     return sesiones[user_id]
 
-# ---------------------------
-# Google Drive helpers
-# ---------------------------
+# --------------------------- Google Drive helpers ---------------------------
 def get_drive_service():
-    creds = None
-    if os.path.exists(TOKEN_FILE):
-        creds = Credentials.from_authorized_user_file(TOKEN_FILE, SCOPES)
-
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-        else:
-            # ⚡ Solo la primera vez en tu PC
-            flow = InstalledAppFlow.from_client_secrets_file(
-                CLIENT_SECRETS_FILE, SCOPES
-            )
-            creds = flow.run_console()
-
-        # Guardar credenciales para el futuro
-        with open(TOKEN_FILE, "w") as token:
-            token.write(creds.to_json())
-
+    creds_info = json.loads(SERVICE_ACCOUNT_JSON)
+    creds = service_account.Credentials.from_service_account_info(
+        creds_info,
+        scopes=["https://www.googleapis.com/auth/drive.file"]
+    )
     service = build("drive", "v3", credentials=creds)
     return service
 
@@ -159,7 +139,7 @@ def save_index(index):
 def find_file_in_drive(service, filename):
     q = f"name = '{filename}' and '{FOLDER_ID}' in parents and trashed = false"
     try:
-        res = service.files().list(q=q, spaces='drive', fields="files(id, name)", supportsAllDrives=True).execute()
+        res = service.files().list(q=q, spaces='drive', fields="files(id, name)").execute()
         files = res.get("files", [])
         if files:
             return files[0].get("id")
@@ -181,7 +161,7 @@ def upload_or_update_file(filename):
     if file_id:
         try:
             updated = service.files().update(
-                fileId=file_id, media_body=media, supportsAllDrives=True
+                fileId=file_id, media_body=media
             ).execute()
             print(f"♻️ Actualizado {basename} -> {updated.get('id')}")
             return updated.get("id")
@@ -193,7 +173,7 @@ def upload_or_update_file(filename):
     found = find_file_in_drive(service, basename)
     if found:
         try:
-            updated = service.files().update(fileId=found, media_body=media, supportsAllDrives=True ).execute()
+            updated = service.files().update(fileId=found, media_body=media).execute()
             index[basename] = updated.get("id")
             save_index(index)
             print(f"♻️ Actualizado (found) {basename} -> {updated.get('id')}")
@@ -202,7 +182,7 @@ def upload_or_update_file(filename):
             print("⚠️ Error actualizando archivo encontrado:", e)
     try:
         file_metadata = {"name": basename, "parents": [FOLDER_ID]}
-        created = service.files().create( body=file_metadata, media_body=media, fields="id", supportsAllDrives=True ).execute()
+        created = service.files().create(body=file_metadata, media_body=media, fields="id").execute()
         index[basename] = created.get("id")
         save_index(index)
         print(f"✅ Creado {basename} -> {created.get('id')}")
@@ -211,10 +191,7 @@ def upload_or_update_file(filename):
         print("⚠️ Error creando archivo en Drive:", e)
         return None
 
-
-# ---------------------------
-# Chat + Guardado
-# ---------------------------
+# --------------------------- Chat + Guardado ---------------------------
 def guardar_en_excel(user_id, sujeto, mensaje):
     archivo = f"conversacion_{user_id}.xlsx"
     hora = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -244,9 +221,7 @@ def chat_con_memoria(user_id, mensaje_usuario):
 
     return respuesta
 
-# ---------------------------
-# Rutas de Flask
-# ---------------------------
+# --------------------------- Rutas de Flask ---------------------------
 @app.route("/")
 def index():
     return render_template("index.html")
@@ -259,7 +234,6 @@ def chat():
     respuesta = chat_con_memoria(user_id, mensaje)
     return jsonify({"respuesta": respuesta})
 
-# endpoint opcional para bajar el excel
 @app.route("/download/<user_id>", methods=["GET"])
 def download_local(user_id):
     archivo = f"conversacion_{user_id}.xlsx"
@@ -267,9 +241,7 @@ def download_local(user_id):
         return jsonify({"error": "not found"}), 404
     return send_file(archivo, as_attachment=True)
 
-# ---------------------------
-# Run
-# ---------------------------
+# --------------------------- Run ---------------------------
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
