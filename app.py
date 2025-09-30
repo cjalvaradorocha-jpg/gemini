@@ -4,14 +4,17 @@ import google.generativeai as genai
 from flask import Flask, request, jsonify, render_template
 import pandas as pd
 from datetime import datetime
-from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
+from google.auth.transport.requests import Request
+from google_auth_oauthlib.flow import InstalledAppFlow
+from google.oauth2.credentials import Credentials
 
 # --- CONFIG ---
 GENAI_API_KEY = os.getenv("GOOGLE_API_KEY", None)
-SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", None)
 FOLDER_ID = os.getenv("DRIVE_FOLDER_ID")
+CLIENT_SECRETS_FILE = "credentials.json"
+TOKEN_FILE = "token.json"
 SCOPES = ["https://www.googleapis.com/auth/drive"]
 
 # Configurar genai
@@ -116,11 +119,23 @@ def get_chat_session(user_id):
 # Google Drive helpers
 # ---------------------------
 def get_drive_service():
-    if not SERVICE_ACCOUNT_JSON:
-        raise RuntimeError("GOOGLE_SERVICE_ACCOUNT_JSON no está configurada en las variables de entorno.")
+    creds = None
+    # Reusar token si existe
+    if os.path.exists(TOKEN_FILE):
+        creds = Credentials.from_authorized_user_file(TOKEN_FILE, SCOPES)
+    # Si no hay token, se genera localmente (solo 1 vez)
+    if not creds or not creds.valid:
+        if creds and creds.expired and creds.refresh_token:
+            creds.refresh(Request())
+        else:
+            flow = InstalledAppFlow.from_client_secrets_file(
+                CLIENT_SECRETS_FILE, SCOPES
+            )
+            creds = flow.run_local_server(port=0)
+        # Guardamos el token para Render
+        with open(TOKEN_FILE, "w") as token:
+            token.write(creds.to_json())
 
-    creds_info = json.loads(SERVICE_ACCOUNT_JSON)
-    creds = service_account.Credentials.from_service_account_info(creds_info, scopes=SCOPES)
     service = build("drive", "v3", credentials=creds)
     return service
 
