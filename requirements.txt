@@ -4,5 +4,5 @@ gunicorn
 google-api-python-client
 google-auth
 google-auth-httplib2
-google-generativeai>=0.8.3
+google-generativeai
 openpyxl

@@ -101,7 +101,7 @@ INSTRUCCIONES PARA TU COMPORTAMIENTO:
     - toma de indicadores en salud (peso, talla, IMC, tensión, glucosa, etc.)"""
 
 # Inicializa modelo (igual que antes)
-model = genai.GenerativeModel("gemini-1.5-flash", system_instruction=prompt_fijo)
+model = genai.GenerativeModel("gemini-2.5-pro", system_instruction=prompt_fijo)
 
 app = Flask(__name__)
 
