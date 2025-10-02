@@ -7,12 +7,20 @@ from datetime import datetime
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 from google.oauth2 import service_account
+from google.oauth2.credentials import Credentials
 
 # --- CONFIG ---
 
-GENAI_API_KEY = os.getenv("GOOGLE_API_KEY", None)
-FOLDER_ID = os.getenv("DRIVE_FOLDER_ID")
-SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
+GENAI_API_KEY = os.getenv("GENAI_API_KEY")
+FOLDER_ID = os.getenv("FOLDER_ID")
+TOKEN_JSON = "token.json"
+SCOPES = ["https://www.googleapis.com/auth/drive.file"]
+INDEX_FILE = "drive_index.json" 
+
+def get_drive_service():
+    creds = Credentials.from_authorized_user_file(TOKEN_JSON, SCOPES)
+    service = build("drive", "v3", credentials=creds)
+    return service
 
 # Configurar genai
 if GENAI_API_KEY:
@@ -99,7 +107,7 @@ INSTRUCCIONES PARA TU COMPORTAMIENTO:
     - toma de indicadores en salud (peso, talla, IMC, tensión, glucosa, etc.)"""
 
 # Inicializa modelo
-model = genai.GenerativeModel("gemini-2.5-pro", system_instruction=prompt_fijo)
+model = genai.GenerativeModel("gemini-2.5-flash", system_instruction=prompt_fijo)
 
 app = Flask(__name__)
 
@@ -111,18 +119,6 @@ def get_chat_session(user_id):
     if user_id not in sesiones:
         sesiones[user_id] = model.start_chat(history=[])
     return sesiones[user_id]
-
-# --------------------------- Google Drive helpers ---------------------------
-def get_drive_service():
-    creds_info = json.loads(SERVICE_ACCOUNT_JSON)
-    creds = service_account.Credentials.from_service_account_info(
-        creds_info,
-        scopes=["https://www.googleapis.com/auth/drive.file"]
-    )
-    service = build("drive", "v3", credentials=creds)
-    return service
-
-INDEX_FILE = "drive_index.json"
 
 def load_index():
     if os.path.exists(INDEX_FILE):
@@ -182,7 +178,7 @@ def upload_or_update_file(filename):
         except Exception as e:
             print("⚠️ Error actualizando archivo encontrado:", e)
     try:
-        file_metadata = {"name": basename, "parents": [FOLDER_ID]}
+        file_metadata = {"name": basename, "parents": [FOLDER_ID],}
         created = service.files().create(body=file_metadata, media_body=media, fields="id").execute()
         index[basename] = created.get("id")
         save_index(index)
