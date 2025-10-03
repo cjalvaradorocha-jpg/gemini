@@ -13,12 +13,13 @@ from google.oauth2.credentials import Credentials
 
 GENAI_API_KEY = os.getenv("GENAI_API_KEY")
 FOLDER_ID = os.getenv("FOLDER_ID")
-TOKEN_JSON = "token.json"
-SCOPES = ["https://www.googleapis.com/auth/drive.file"]
 INDEX_FILE = "drive_index.json" 
+TOKEN_JSON = "/etc/secrets/token.json"
+SCOPES = ["https://www.googleapis.com/auth/drive.file"]
 
 def get_drive_service():
-    creds = Credentials.from_authorized_user_file(TOKEN_JSON, SCOPES)
+    creds_info = json.loads(os.getenv("GOOGLE_CREDENTIALS"))
+    creds = Credentials.from_authorized_user_info(creds_info, SCOPES)
     service = build("drive", "v3", credentials=creds)
     return service
 
