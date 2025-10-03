@@ -1,13 +1,15 @@
 import os
 import json
+import pytz
 import google.generativeai as genai
-from flask import Flask, request, jsonify, render_template, send_file
 import pandas as pd
+from flask import Flask, request, jsonify, render_template, send_file
 from datetime import datetime
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 from google.oauth2 import service_account
 from google.oauth2.credentials import Credentials
+from datetime import datetime
 
 # --- CONFIG ---
 
@@ -21,6 +23,11 @@ def get_drive_service():
     creds = Credentials.from_authorized_user_file(TOKEN_JSON, SCOPES)
     service = build("drive", "v3", credentials=creds)
     return service
+
+colombia_tz = pytz.timezone("America/Bogota")
+
+def hora_actual():
+    return datetime.now(colombia_tz).strftime("%Y-%m-%d %H:%M:%S")
 
 # Configurar genai
 if GENAI_API_KEY:
@@ -197,7 +204,7 @@ def upload_or_update_file(filename):
 # --------------------------- Chat + Guardado ---------------------------
 def guardar_en_excel(user_id, sujeto, mensaje):
     archivo = f"conversacion_{user_id}.xlsx"
-    hora = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    hora = hora_actual()
     nuevo = pd.DataFrame([[hora, sujeto, mensaje]], columns=["Hora", "Sujeto", "Mensaje"])
 
     if os.path.exists(archivo):
