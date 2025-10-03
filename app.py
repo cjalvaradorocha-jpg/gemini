@@ -18,8 +18,7 @@ TOKEN_JSON = "/etc/secrets/token.json"
 SCOPES = ["https://www.googleapis.com/auth/drive.file"]
 
 def get_drive_service():
-    creds_info = json.loads(os.getenv("GOOGLE_CREDENTIALS"))
-    creds = Credentials.from_authorized_user_info(creds_info, SCOPES)
+    creds = Credentials.from_authorized_user_file(TOKEN_JSON, SCOPES)
     service = build("drive", "v3", credentials=creds)
     return service
 
